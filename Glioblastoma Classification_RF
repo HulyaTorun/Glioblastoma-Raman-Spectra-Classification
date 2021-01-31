@@ -149,3 +149,7 @@ plt.ylabel('True Positive Rate')
 plt.title('ROC Curve for GB vs WM')
 plt.legend(loc="lower right")
 plt.show()
+
+from sklearn.metrics import plot_confusion_matrix
+plot_confusion_matrix(model_cv, X_test, y_test)  
+plt.show()
