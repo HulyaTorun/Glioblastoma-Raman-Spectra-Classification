@@ -1,0 +1,151 @@
+import os
+import pandas as pd
+from scipy.signal import savgol_filter
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.svm import SVC
+from sklearn.model_selection import train_test_split
+from sklearn import metrics
+from sklearn.utils import shuffle
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+
+cv = 5
+
+toNormalize = True
+toScale = True
+toPCA = True
+component_size = 0.9
+toFilter = True
+window_length = 61
+deriv = 1
+polyorder = 4
+
+def txt_to_dataframe(directory,label):
+    dataframe = pd.DataFrame()
+    label_list = []
+    all_data = pd.read_csv(directory,delimiter="\t")
+    wave_length = all_data["#Y"][0:1015]
+    wave_length = wave_length[0:1010]
+    intensity_df = all_data["Unnamed: 3"]
+    counter = 0
+    for i in range(0,len(intensity_df),1015):
+        if counter == 100:
+            break
+        current_sample = intensity_df[i:i+1015].to_numpy().transpose()
+        current_sample = current_sample[0:1010]
+        if toNormalize:
+            current_sample =(current_sample - min(current_sample))/(max(current_sample)-min(current_sample))
+        if toFilter:
+            current_sample = pd.DataFrame(savgol_filter(current_sample, window_length = window_length,polyorder = polyorder,deriv = deriv)).transpose()
+        else:
+            current_sample = pd.DataFrame(current_sample).transpose()
+        dataframe = dataframe.append(current_sample)
+        
+        counter = counter + 1
+        label_list.append(label)
+    dataframe["label"] = label_list
+    
+    return dataframe, wave_length
+
+def folder_to_dataframe(directory,label):
+    dataframe = pd.DataFrame()
+    files = os.listdir(directory)
+    counter =0
+    for file in files:
+        file_dataframe, wave_length = txt_to_dataframe(os.path.join(os.getcwd(),directory) + "/" +file,label)
+        dataframe = dataframe.append(file_dataframe)
+        counter +=1
+        if counter ==20:
+            break
+    return dataframe, wave_length
+
+
+wm_dataframe, wave_length = folder_to_dataframe("wm",0)
+tm_dataframe, wave_length = folder_to_dataframe("tm",1)
+
+anomaly_df = tm_dataframe
+normal_df = wm_dataframe
+
+df_avg = normal_df.drop(["label"],axis=1).sum(axis=0)/normal_df.shape[0]
+plt.plot(wave_length, df_avg,label = "normal tissue", color = "green")
+df_avg = anomaly_df.drop(["label"],axis=1).sum(axis=0)/anomaly_df.shape[0]
+plt.plot(wave_length, df_avg,label = "tumor tissue", color = "red")
+plt.legend()
+plt.show()
+
+print(normal_df.shape)
+print(anomaly_df.shape)
+
+
+X_train_anomaly, X_test_anomaly, y_train_anomaly, y_test_anomaly = train_test_split(anomaly_df.drop(["label"],axis=1),anomaly_df["label"],test_size = 0.2, random_state = 0)
+X_train_normal, X_test_normal, y_train_normal, y_test_normal = train_test_split(normal_df.drop(["label"],axis=1),normal_df["label"],test_size = 0.2, random_state = 0)
+
+X_train = X_train_anomaly.append(X_train_normal)
+y_train = y_train_anomaly.append(y_train_normal)
+
+if toScale:
+    scaler= StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    
+    X_test_anomaly = scaler.transform(X_test_anomaly)
+    X_test_normal = scaler.transform(X_test_normal)
+
+if toPCA:
+    pca = PCA(n_components = component_size)
+    X_train = pca.fit_transform(X_train)
+    
+    print(pca.explained_variance_ratio_)
+    print("Total Exp Var: ",sum(pca.explained_variance_ratio_))
+    
+    X_test_normal = pca.transform(X_test_normal)
+    X_test_anomaly = pca.transform(X_test_anomaly)
+
+from sklearn.ensemble import RandomForestClassifier
+
+model = RandomForestClassifier(n_estimators=50)
+
+grid = {}
+
+model_cv = GridSearchCV(model,grid,cv=cv)
+model_cv.fit(X_train,y_train)
+
+best_accuracy = model_cv.best_score_
+optimal_parameters = model_cv.best_params_
+
+print("Component size: ",X_train.shape[1])
+print("Training accuracy: ",best_accuracy)
+print("Optimal parameters: ",optimal_parameters)
+
+predictions = model_cv.predict(X_test_normal)
+print(predictions)
+test_accuracy = metrics.accuracy_score(y_test_normal, predictions)
+print("Normal tissue Test accuracy out of "+ str(len(y_test_normal)) +" samples: ",test_accuracy)
+
+predictions = model_cv.predict(X_test_anomaly)
+print(predictions)
+test_accuracy = metrics.accuracy_score(y_test_anomaly, predictions)
+print("Tumor tissue Test accuracy out of "+ str(len(y_test_anomaly)) +" samples: ",test_accuracy)
+
+X_test = np.concatenate((X_test_normal,X_test_anomaly))
+y_test = np.concatenate((y_test_normal,y_test_anomaly))
+probas_ = model_cv.predict_proba(X_test)
+
+from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_curve, auc
+
+fpr, tpr, thresholds = roc_curve(y_test, probas_[:, 1])
+roc_auc = auc(fpr, tpr)
+
+# Plot ROC curve
+plt.clf()
+plt.plot(fpr, tpr, label='ROC curve (area = %0.2f)' % roc_auc)
+plt.plot([0, 1], [0, 1], 'k--')
+plt.xlim([0.0, 1.0])
+plt.ylim([0.0, 1.0])
+plt.xlabel('False Positive Rate')
+plt.ylabel('True Positive Rate')
+plt.title('ROC Curve for GB vs WM')
+plt.legend(loc="lower right")
+plt.show()
